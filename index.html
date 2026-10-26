@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Exportador de Reportes a Excel</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Material+Icons&display=swap" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+    <link rel="stylesheet" href="style.css" />
+    <link rel="stylesheet" href="geo.css" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+</head>
+<body>
+    <div class="topbar">
+        <div class="brand">
+            <i class="material-icons">grid_on</i>
+            <span>Reportes a Excel</span>
+        </div>
+        <div class="theme-switch">
+            <label class="switch">
+                <input type="checkbox" id="darkModeToggle" onchange="toggleDarkMode()" />
+                <span class="slider"></span>
+            </label>
+            <span id="darkModeLabel">🌙 Modo oscuro</span>
+        </div>
+    </div>
+
+    <main class="container" id="contenedor">
+        <div class="selector-herramienta">
+            <label for="herramienta">¿Qué quieres hacer?</label>
+            <div class="select-wrap">
+                <i class="material-icons" id="iconoHerramienta">file_download</i>
+                <select id="herramienta">
+                    <option value="t-reporte" data-icono="file_download">Descargar un reporte en Excel</option>
+                    <option value="tool2" data-icono="compare_arrows">Validar y corregir la geo de la base de PDV</option>
+                    <option value="tool1" data-icono="place">Georreferenciar un archivo</option>
+                </select>
+                <i class="material-icons flecha">expand_more</i>
+            </div>
+        </div>
+
+        <div id="t-reporte">
+            <section class="card">
+                <h1>Descarga tu reporte en Excel</h1>
+                <p class="subtitle">Escribe el nombre del reporte y genera el archivo automáticamente.</p>
+
+                <form id="exportForm" autocomplete="off">
+                    <label for="reportInput">Nombre del reporte</label>
+                    <div class="input-row">
+                        <i class="material-icons input-icon">search</i>
+                        <input
+                            type="text"
+                            id="reportInput"
+                            name="reportInput"
+                            placeholder="Ej: pdv_nutresa"
+                            required
+                        />
+                        <button type="submit" id="submitBtn">
+                            <i class="material-icons">file_download</i>
+                            <span>Generar Excel</span>
+                        </button>
+                    </div>
+
+                    <div class="date-row">
+                        <div>
+                            <label for="fechaDesde">Desde (opcional)</label>
+                            <input type="date" id="fechaDesde" />
+                        </div>
+                        <div>
+                            <label for="fechaHasta">Hasta (opcional)</label>
+                            <input type="date" id="fechaHasta" />
+                        </div>
+                    </div>
+                    <p class="field-hint">Si eliges fechas, solo se descargan las filas de ese rango (por la columna de fecha del reporte, p. ej. FECHA_VISITA). El archivo se llama como el reporte más la fecha de inicio.</p>
+                </form>
+
+                <div id="results" class="results" aria-live="polite"></div>
+            </section>
+
+            <p class="hint">
+                El reporte se descarga en formato <strong>.xlsx</strong>, listo para compartir.
+            </p>
+        </div>
+
+        <div class="geo hidden" id="geoComun">
+            <p class="intro">Todo se procesa en tu navegador. El servicio de búsqueda solo se usa para encontrar locales en el mapa.</p>
+<section class="panel" id="panelServicio">
+  <h2>Servicio de búsqueda</h2>
+  <div class="row">
+    <label class="opt"><input type="radio" name="prov" value="google" checked>
+      <div><b>Google Maps</b> (recomendado)<small>Mejor cobertura de comercios en Colombia. Requiere una API key con Places API (New) y Geocoding API habilitadas; puede generar costos.</small></div></label>
+    <label class="opt"><input type="radio" name="prov" value="osm">
+      <div><b>OpenStreetMap</b> (gratis)<small>Más lento (1 consulta por segundo) y con menos establecimientos registrados.</small></div></label>
+  </div>
+  <p class="aviso-limite hidden" id="avisoLimite" role="status"></p>
+  <div id="keyBox" style="margin-top:12px">
+    <label for="apikey">API key de Google</label>
+    <input type="password" id="apikey" placeholder="AIza..." autocomplete="off">
+    <div class="row" style="margin-top:6px">
+      <label class="check"><input type="checkbox" id="remember"> Recordarla en este navegador</label>
+    </div>
+    <p class="hint">La clave solo se usa desde tu navegador para buscar los locales en el mapa: al georreferenciar un archivo, o al comparar cuando activas «Comparar también con el mapa». Restríngela en Google Cloud a <code>https://phygital-exp.github.io/*</code>.</p>
+  </div>
+</section>
+
+<div id="tool1">
+<section class="panel">
+  <h2><span class="step">1</span>Archivo</h2>
+  <div id="drop" tabindex="0" role="button" aria-label="Seleccionar archivo">
+    <strong>Arrastra aquí tu archivo .xlsx, .xls o .csv</strong>
+    <span>o haz clic para elegirlo</span>
+  </div>
+  <input type="file" id="file" accept=".xlsx,.xls,.csv" class="hidden">
+  <p id="fileInfo" class="hint"></p>
+</section>
+
+<section class="panel hidden" id="cfg">
+  <p class="hint err" id="cfgAviso" style="margin:0"></p>
+  <details class="ajuste" id="cfgDetalle">
+    <summary>Columnas reconocidas automáticamente · ajustar</summary>
+    <div class="grid" id="mapping" style="margin-top:10px"></div>
+  </details>
+  <p class="hint">Si la latitud o la longitud dicen <b>sin geo</b>, el registro se conserva tal cual, sin buscarlo.</p>
+</section>
+
+<section class="panel hidden" id="prov">
+  <h2><span class="step">2</span>Buscar las ubicaciones</h2>
+  <div class="row">
+    <label class="check"><input type="checkbox" id="testMode"> Modo prueba: procesar solo los primeros 5 registros</label>
+  </div>
+  <div class="row" style="margin-top:14px">
+    <button class="primary" id="run">Georreferenciar</button>
+    <button id="stop" disabled>Detener</button>
+  </div>
+  <div id="progress"><div></div></div>
+  <div id="status"></div>
+</section>
+
+<section class="panel hidden" id="results">
+  <h2><span class="step">3</span>Resultados</h2>
+  <div class="cards" id="cards"></div>
+  <div id="map"></div>
+  <div class="row" style="margin-top:14px;justify-content:space-between">
+    <div class="row">
+      <label for="filter" style="margin:0">Mostrar</label>
+      <select id="filter" style="width:auto">
+        <option value="">Todos</option><option>GEORREFERENCIADO</option><option>REVISAR</option>
+        <option>SIN_RESULTADO</option><option>SIN_GEO</option><option>ERROR</option>
+      </select>
+    </div>
+    <div class="row">
+      <label class="check"><input type="checkbox" id="detalle"> Incluir columnas de detalle (observaciones, fuente, resumen)</label>
+      <button class="primary" id="download">Descargar Excel</button>
+    </div>
+  </div>
+  <div class="table-wrap"><table id="table"></table></div>
+</section>
+</div>
+<div id="tool2" class="hidden">
+<section class="panel">
+  <h2><span class="step">1</span>Archivos</h2>
+  <div class="grid2">
+    <div>
+      <div class="drop" id="dropRutero" tabindex="0" role="button" aria-label="Seleccionar rutero">
+        <strong>Rutero (visitas)</strong><span>Arrastra el Excel del rutero o haz clic</span>
+      </div>
+      <input type="file" id="fileRutero" accept=".xlsx,.xls,.csv" class="hidden">
+      <p class="hint" id="infoRutero"></p>
+    </div>
+    <div>
+      <div class="drop" id="dropBase" tabindex="0" role="button" aria-label="Seleccionar base de PDV">
+        <strong>Base de puntos de venta</strong><span>Arrastra el Excel con la geo de los PDV o haz clic</span>
+      </div>
+      <input type="file" id="fileBase" accept=".xlsx,.xls,.csv" class="hidden">
+      <p class="hint" id="infoBase"></p>
+    </div>
+  </div>
+  <p class="hint" style="margin-top:16px"><b>O cárgalos directamente desde el servidor de reportes</b>, sin descargarlos antes:</p>
+  <div class="grid2" style="margin-top:8px">
+    <div class="row">
+      <input type="text" id="srvRutero" value="rutero_nutresa" aria-label="Nombre del reporte del rutero" style="flex:1;min-width:140px">
+      <button id="srvRuteroBtn">Cargar rutero</button>
+    </div>
+    <div class="row">
+      <input type="text" id="srvBase" value="pdv_nutresa" aria-label="Nombre del reporte de la base de PDV" style="flex:1;min-width:140px">
+      <button id="srvBaseBtn">Cargar base</button>
+    </div>
+  </div>
+  <p class="status" id="srvStatus"></p>
+</section>
+
+<section class="panel hidden" id="vCols">
+  <p class="hint err" id="vColsAviso" style="margin:0"></p>
+  <details class="ajuste" id="vColsDetalle">
+    <summary>Columnas reconocidas automáticamente · ajustar</summary>
+    <p class="hint" style="margin:10px 0 8px">Rutero</p>
+    <div class="grid" id="mapRutero"></div>
+    <p class="hint" style="margin:14px 0 8px">Base de puntos de venta</p>
+    <div class="grid" id="mapBase"></div>
+  </details>
+</section>
+
+<section class="panel hidden" id="vFiltros">
+  <h2><span class="step">2</span>Filtros del rutero</h2>
+  <div class="grid">
+    <div><label for="fDesde">Fecha de visita desde</label><input type="date" id="fDesde"></div>
+    <div><label for="fHasta">Fecha de visita hasta (opcional)</label><input type="date" id="fHasta"></div>
+    <div><label for="selEvento">Evento</label><select id="selEvento"></select></div>
+  </div>
+  <p class="hint" id="rangoFechas"></p>
+  <label class="check" style="margin-top:10px"><input type="checkbox" id="excluirCanceladas" checked> Excluir visitas canceladas</label>
+  <div class="cards" id="vConteo" style="margin-top:14px"></div>
+  <p class="hint">Se eliminan como duplicadas las visitas con el mismo código, fecha y evento. Luego se toma cada punto de venta una sola vez.</p>
+</section>
+
+<section class="panel hidden" id="vRun">
+  <h2><span class="step">3</span>Comprobar la geo de la base en el mapa</h2>
+  <p class="hint" style="margin:0 0 12px">Cada punto de venta se busca en el mapa (con el servicio elegido arriba) por su nombre, dirección y ciudad, y se mide la distancia contra la latitud y longitud de la base. Si la geo de la base está bien, se conserva; si no, se corrige con la ubicación del local encontrado.</p>
+  <p class="hint" id="avisoGeoRutero" style="margin:0 0 12px"></p>
+  <div class="grid" style="margin-bottom:12px">
+    <div>
+      <label for="vModo">Puntos de venta a procesar</label>
+      <select id="vModo">
+        <option value="rutero">Los del rutero (con los filtros)</option>
+        <option value="singeo">Todos los de la base que dicen «Sin Geo»</option>
+        <option value="todos">Toda la base de PDV</option>
+      </select>
+    </div>
+  </div>
+  <div class="cards" id="vConteoBase" style="margin-bottom:12px"></div>
+  <p class="hint" id="vEstimado" style="margin:0 0 12px"></p>
+  <div class="row">
+    <div style="min-width:200px"><label for="tolerancia">Tolerancia para "corresponde" (metros)</label><input type="text" id="tolerancia" value="150" inputmode="numeric"></div>
+    <label class="check"><input type="checkbox" id="vPrueba"> Modo prueba: solo 5 puntos de venta</label>
+  </div>
+  <div class="row" style="margin-top:12px">
+    <label class="check"><input type="checkbox" id="vOmitirOk"> No buscar en el mapa los que ya tienen GEO_OK en la base (se conservan como están)</label>
+  </div>
+  <div class="row" style="margin-top:14px">
+    <button class="primary" id="vRunBtn">Comprobar puntos de venta</button>
+    <button id="vStop" disabled>Detener</button>
+  </div>
+  <div class="progress" id="vProgress"><div></div></div>
+  <div class="status" id="vStatus"></div>
+</section>
+
+<section class="panel hidden" id="vResults">
+  <h2><span class="step">4</span>Resultado</h2>
+  <div class="cards" id="vCards"></div>
+  <div id="vMap" class="mapa"></div>
+  <p class="hint">Azul: geo de la base · Verde: local encontrado en el mapa · La línea roja une las dos cuando no coinciden.</p>
+  <p class="hint">En la columna <b>Geo final</b> eliges qué coordenada queda en la base para cada PDV: la de la base, la del rutero, la del mapa, una que escribas (o pegues desde Google Maps) o «Sin Geo». Ya viene una sugerencia; revisa sobre todo los que dicen <b>REVISAR</b> y <b>NO CORRESPONDE</b>. Los <b>NO VERIFICABLE</b> (el local no se encontró en el mapa) conservan la geo que ya tenían; si no tenían, quedan «Sin Geo».</p>
+  <div class="row" style="margin-top:14px;justify-content:space-between">
+    <div class="row">
+      <label for="vFilter" style="margin:0">Mostrar</label>
+      <select id="vFilter" style="width:auto"><option value="">Todos</option></select>
+    </div>
+    <div class="row">
+      <button id="vDownload">Descargar comparación</button>
+      <button class="primary" id="vDownloadBase">Descargar base de PDV con la geo</button>
+    </div>
+  </div>
+  <div class="cards" id="vFinal" style="margin-top:14px"></div>
+  <div class="table-wrap"><table id="vTable"></table></div>
+</section>
+</div>
+            <footer>
+                Datos de OpenStreetMap © colaboradores de OpenStreetMap (ODbL).
+            </footer>
+        </div>
+    </main>
+
+    <script src="script.js"></script>
+    <script src="geo.js"></script>
+</body>
+</html>

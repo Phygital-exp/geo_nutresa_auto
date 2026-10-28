@@ -468,22 +468,40 @@ async function georreferenciar(fila, prov) {
     const cm = await centroCiudad(prov, nom.municipioNombre);
     consultas.push([conCiudad(sede, nombreMunicipio(nom.municipioNombre)), cm]);
   }
+  // Coincidencia fuerte: nombre y sede coinciden, está en la ciudad y, si hay dirección, cerca de ella.
+  // Con una así no hace falta seguir buscando (cada búsqueda en Google consume cupo).
+  const fuerte = lista => lista.some(c => {
+    const e = evaluarNombre(nom, c);
+    if (!e.ok || !principales.some(m => enMunicipio(c, m))) return false;
+    if (nom.marca && nom.sucursal.length && e.frac < .99) return false;
+    if (punto && !punto.soloReferencia) return distancia(c.lat, c.lon, punto.lat, punto.lon) <= 300;
+    // Si hay dirección pero no se pudo ubicar con precisión, falta evidencia (p. ej. el centro comercial): se sigue buscando
+    return !utilizable(d);
+  });
   let cands = [];
   const hechas = new Set();
   for (const [q, s] of consultas) {
     const k = q + JSON.stringify(s);
-    if (!hechas.has(k)) { hechas.add(k); cands.push(...await prov.buscar(q, s)); }
+    if (hechas.has(k)) continue;
+    hechas.add(k);
+    cands.push(...await prov.buscar(q, s));
+    if (fuerte(cands)) break;
   }
-  // Búsqueda en municipios vecinos si no hay una sede probable en la ciudad registrada
+  // Búsqueda en municipios vecinos si no hay una sede probable en la ciudad registrada.
+  // Con Google solo se busca donde cayó la dirección y en las ciudades propias de la cadena, no en toda el área.
   const probable = lista => lista.some(c => { const e = evaluarNombre(nom, c); return e.ok && e.frac >= (nom.sucursal.length ? .5 : 1) && principales.some(m => enMunicipio(c, m)); });
-  if (!probable(cands)) for (const m of vecinos) {
+  const vecinosABuscar = prov === Google
+    ? [punto && vecinos.find(m => enMunicipio(punto, m)), ...nom.ciudadesMarca.filter(m => vecinos.includes(m))].filter((v, i, a) => v && a.indexOf(v) === i)
+    : vecinos;
+  if (!probable(cands)) for (const m of vecinosABuscar) {
     const cm = await centroCiudad(prov, m);
     cands.push(...await prov.buscar(conCiudad(sede, nombreMunicipio(m)), cm));
+    if (fuerte(cands) || probable(cands.filter(c => enMunicipio(c, m)))) break;
   }
-  // Centros comerciales nombrados en la sede (p. ej. "Plaza Salitre", "Cosmocentro")
+  // Centros comerciales nombrados en la sede (p. ej. "Plaza Salitre", "Cosmocentro"); solo si aún no hay coincidencia fuerte
   const sedeCC = nom.sucursal.filter(t => !SEDE_GENERICA.has(t) && !/^\d+$/.test(t) && t !== "COMERCIAL");
   let centros = [];
-  if (sedeCC.length) {
+  if (sedeCC.length && !fuerte(cands)) {
     const cc = await prov.buscar(conCiudad(`Centro Comercial ${sedeCC.map(titulo).join(" ")}`, titulo(ciudad)), centro);
     centros = cc.filter(c => { const tn = new Set(expandir(tokens(c.nombre)));
       return (c.esCC || (tn.has("CENTRO") && tn.has("COMERCIAL")) || tn.has("MALL")) && sedeCC.every(t => tn.has(t)) && municipioDe(c); });

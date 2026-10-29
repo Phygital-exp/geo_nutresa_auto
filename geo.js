@@ -1380,14 +1380,14 @@ async function validarPdvs() {
         centro = datos.ciudad ? await centroCiudad(prov, codigoMunicipio(datos.ciudad)) : null;
       }
       V.res.set(p.sap, {g, ...evaluarComparacion({...p, ...datos}, g, rs, enc, centro, tol, usarMapa)});
-      V.final.set(p.sap, decisionPorDefecto(V.res.get(p.sap)));
+      V.final.set(p.sap, decisionInicial(V.res.get(p.sap)));
     } catch (e) {
       // Límite gratis de Google: se repite este PDV con OpenStreetMap y se sigue con él
       if (e.limiteGoogle && prov === Google) { prov = pasarAOpenStreetMap(); i--; continue; }
       V.res.set(p.sap, {g, rs, clase: "NO_VERIFICABLE", motivo: `Falló la consulta: ${e.message}`, ubic: "ERROR", punto: null,
         dist: null, distMapa: null, distRutero: null, pctDentro: null, direccionMapa: "", error: true});
       // Si falló la consulta no se borra la geo que ya tenía la base
-      V.final.set(p.sap, {fuente: g.estado === "SI" ? "base" : "singeo", pendiente: true});
+      V.final.set(p.sap, autoConfirmar(V.res.get(p.sap), {fuente: g.estado === "SI" ? "base" : "singeo", pendiente: true}));
       if (e.fatal) { estadoV(`El servicio rechazó la consulta: ${e.message}. Revisa la API key y que estén habilitadas Places API (New) y Geocoding API.`, true); break; }
     }
     // Sin mapa la comparación es inmediata: se repinta cada 50 PDV en vez de cada 3
@@ -1489,7 +1489,7 @@ function descargarV() {
     const d = r ? V.final.get(p.sap) || decisionPorDefecto(r) : null, cf = r ? coordsFinal(r, d) : null;
     return Object.assign(fila, {VALIDACION: ETIQUETA_V[r ? r.clase || "NO_VERIFICABLE" : "NO_PROCESADO"],
       LATITUD_FINAL: cf ? +cf[0].toFixed(7) : r ? "Sin Geo" : "", LONGITUD_FINAL: cf ? +cf[1].toFixed(7) : r ? "Sin Geo" : "",
-      GEO_FINAL_FUENTE: r ? (cf ? FUENTE_GEO[d.fuente] : "SIN GEO") + (d.pendiente ? " (por confirmar)" : d.editado ? " (a mano)" : "") : "",
+      GEO_FINAL_FUENTE: r ? (cf ? FUENTE_GEO[d.fuente] : "SIN GEO") + (d.pendiente ? " (por confirmar)" : d.editado ? " (a mano)" : d.autoConfirmada ? " (confirmada automáticamente)" : "") : "",
       MOTIVO: r?.motivo || ""});
   });
   const wb = XLSX.utils.book_new();
@@ -1556,6 +1556,25 @@ function decisionPorDefecto(r) {
   }
 }
 
+/** Confirma una sugerencia pendiente: si iba a quedar «Sin Geo» pero el mapa dio un punto, se toma el del mapa. */
+function confirmarSugerencia(r, d) {
+  if (!d.pendiente) return d;
+  const fuente = d.fuente === "singeo" && fuentesGeo(r).mapa ? "mapa" : d.fuente;
+  return {...d, fuente, pendiente: false, autoConfirmada: true};
+}
+const autoConfirmar = (r, d) => $("#vAutoConfirmar").checked ? confirmarSugerencia(r, d) : d;
+const decisionInicial = r => autoConfirmar(r, decisionPorDefecto(r));
+
+// Al marcar la opción se confirman las pendientes ya comparadas; al desmarcarla vuelven a quedar como sugerencia
+$("#vAutoConfirmar").addEventListener("change", e => {
+  for (const [sap, r] of V.res) {
+    const d = V.final.get(sap) || decisionPorDefecto(r);
+    if (e.target.checked) V.final.set(sap, confirmarSugerencia(r, d));
+    else if (d.autoConfirmada) V.final.set(sap, decisionPorDefecto(r));
+  }
+  if (V.res.size) pintarV();
+});
+
 /** Coordenadas de la decisión, o null si queda «Sin Geo». */
 function coordsFinal(r, d) {
   if (!d || d.fuente === "singeo") return null;
@@ -1595,6 +1614,7 @@ function celdaGeoFinal(sap, r) {
   }
   if (d.pendiente) html += `<small class="pendiente">Sugerencia por confirmar</small>`;
   else if (d.editado) html += `<small>Elegido a mano</small>`;
+  else if (d.autoConfirmada) html += `<small>Confirmada automáticamente</small>`;
   return html;
 }
 
@@ -1603,6 +1623,7 @@ $("#vTable").addEventListener("change", e => {
   const sap = e.target.dataset.sap;
   if (!sap) return;
   const r = V.res.get(sap), d = {...(V.final.get(sap) || decisionPorDefecto(r))};
+  delete d.autoConfirmada;
   if (e.target.classList.contains("selFinal")) {
     Object.assign(d, {fuente: e.target.value, pendiente: false, editado: true});
     if (d.fuente !== "manual") { delete d.lat; delete d.lon; delete d.texto; }
@@ -1651,7 +1672,7 @@ function descargarBaseV() {
     const d = V.final.get(sap) || decisionPorDefecto(res), c = coordsFinal(res, d);
     ws[XLSX.utils.encode_cell({r, c: cLat})] = c ? {t: "n", v: +c[0].toFixed(7)} : {t: "s", v: "Sin Geo"};
     ws[XLSX.utils.encode_cell({r, c: cLon})] = c ? {t: "n", v: +c[1].toFixed(7)} : {t: "s", v: "Sin Geo"};
-    extra.push([c ? FUENTE_GEO[d.fuente] : "SIN GEO", ETIQUETA_V[res.clase] + (d.pendiente ? " (sugerencia sin confirmar)" : d.editado ? " (elegido a mano)" : "")]);
+    extra.push([c ? FUENTE_GEO[d.fuente] : "SIN GEO", ETIQUETA_V[res.clase] + (d.pendiente ? " (sugerencia sin confirmar)" : d.editado ? " (elegido a mano)" : d.autoConfirmada ? " (confirmada automáticamente)" : "")]);
   }
   XLSX.utils.sheet_add_aoa(ws, extra, {origin: {r: rango.s.r, c: rango.e.c + 1}});
   const wb = XLSX.utils.book_new();

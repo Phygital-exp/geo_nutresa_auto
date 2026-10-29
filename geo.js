@@ -865,7 +865,9 @@ function descargar() {
   const cabecera = [];
   for (let c = rango.s.c; c <= rango.e.c; c++) { const celda = ws[XLSX.utils.encode_cell({r: rango.s.r, c})]; cabecera.push(celda ? String(celda.v) : ""); }
   const colLat = cabecera.indexOf(m.lat) + rango.s.c, colLon = cabecera.indexOf(m.lon) + rango.s.c;
-  const nuevas = ["DIRECCION_MAPA", "UBICACION"];
+  // GEO_OK: "OK" si quedó con geo (verificada o por confirmar), "NA" si no; si el archivo no la trae, se agrega
+  const iGeoOk = cabecera.findIndex(h => /^GEO[_\s]?OK$/i.test(h.trim())), colGeoOk = iGeoOk + rango.s.c;
+  const nuevas = iGeoOk < 0 ? ["GEO_OK"] : [];
   if (detalle) nuevas.push("LATITUD_ORIGINAL", "LONGITUD_ORIGINAL", "NOMBRE_ENCONTRADO", "CIUDAD_ENCONTRADA",
     "ESTADO_GEORREFERENCIACION", "FUENTE_COORDENADAS", "PLACE_ID", "TIPO_COINCIDENCIA", "OBSERVACIONES");
   const extra = [nuevas];
@@ -880,12 +882,14 @@ function descargar() {
       if (m.lat) ws[XLSX.utils.encode_cell({r: fila, c: colLat})] = lat;
       if (m.lon) ws[XLSX.utils.encode_cell({r: fila, c: colLon})] = lon;
     }
-    const filaExtra = [r && r.estado !== "SIN_GEO" ? String(r.direccion || "").toUpperCase() : "", ubicacionDe(r)];
+    const geoOk = r ? (p ? "OK" : "NA") : null;
+    if (geoOk && iGeoOk >= 0) ws[XLSX.utils.encode_cell({r: fila, c: colGeoOk})] = {t: "s", v: geoOk};
+    const filaExtra = iGeoOk < 0 ? [geoOk || ""] : [];
     if (detalle) filaExtra.push(m.lat ? f[m.lat] : "", m.lon ? f[m.lon] : "", r?.nombre || "", r?.ciudad || "",
       r ? r.estado : "NO_PROCESADO", r?.fuente || "", r?.id || "", r?.tipo || "", r ? r.obs.join(" ") : "");
     extra.push(filaExtra);
   });
-  XLSX.utils.sheet_add_aoa(ws, extra, {origin: {r: rango.s.r, c: rango.e.c + 1}});
+  if (nuevas.length) XLSX.utils.sheet_add_aoa(ws, extra, {origin: {r: rango.s.r, c: rango.e.c + 1}});
   ws["!cols"] = [...cabecera, ...nuevas].map(k => ({wch: k === "OBSERVACIONES" ? 90 : /DIRECCION|NOMBRE|PDV/.test(k) ? 40 : 14}));
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, (hoja || "Datos").slice(0, 31));

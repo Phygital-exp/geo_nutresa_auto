@@ -279,8 +279,8 @@ function leerUsoGoogle() {
   return uso || {...(USO_INICIAL_GOOGLE[mes] || {places: 0, geocoding: 0}), agotado: false};
 }
 function guardarUsoGoogle(uso) { try { localStorage.setItem(`geo_uso_google_${mesActual()}`, JSON.stringify(uso)); } catch (e) {} }
-const tipoGoogle = url => url.includes("places.googleapis.com") ? "places"
-  : url.includes("maps.googleapis.com/maps/api/geocode") ? "geocoding" : null;
+const tipoGoogle = url => url.includes("places.googleapis.com") || url.includes("/api/places") ? "places"
+  : url.includes("maps.googleapis.com/maps/api/geocode") || url.includes("/api/geocode") ? "geocoding" : null;
 function googleAgotado() {
   const uso = leerUsoGoogle();
   return uso.agotado || uso.places >= LIMITE_GOOGLE.places || uso.geocoding >= LIMITE_GOOGLE.geocoding;
@@ -348,6 +348,9 @@ function pasarAOpenStreetMap() {
 }
 
 /* ============================== Proveedor Google ============================== */
+// Proxy de la rama Proxy (Railway): guarda la API key en el servidor. Si hay URL, la página no pide clave.
+const PROXY_GEO = "";
+const usaProxy = () => Boolean(PROXY_GEO);
 const Google = {
   nombre: "Google Places API",
   campos: "places.id,places.displayName,places.formattedAddress,places.location,places.types,places.addressComponents",
@@ -355,8 +358,9 @@ const Google = {
   async buscar(texto, centro) {
     const cuerpo = {textQuery: texto, languageCode: "es", regionCode: "CO", pageSize: 10};
     if (centro) cuerpo.locationBias = {circle: {center: {latitude: centro.lat, longitude: centro.lon}, radius: centro.radio || 5000}};
-    const datos = await solicitar("https://places.googleapis.com/v1/places:searchText", {
-      method: "POST", headers: {"Content-Type": "application/json", "X-Goog-Api-Key": this.key, "X-Goog-FieldMask": this.campos},
+    const datos = await solicitar(usaProxy() ? `${PROXY_GEO}/api/places` : "https://places.googleapis.com/v1/places:searchText", {
+      method: "POST", headers: usaProxy() ? {"Content-Type": "application/json"}
+        : {"Content-Type": "application/json", "X-Goog-Api-Key": this.key, "X-Goog-FieldMask": this.campos},
       body: JSON.stringify(cuerpo)}, 200, "gp|" + JSON.stringify(cuerpo));
     return (datos.places || []).filter(p => p.location).map(p => {
       const comps = p.addressComponents || [];
@@ -371,8 +375,9 @@ const Google = {
     });
   },
   async geocodificar(texto) {
-    const url = "https://maps.googleapis.com/maps/api/geocode/json?" + new URLSearchParams(
-      {address: texto, components: "country:CO", language: "es", key: this.key});
+    const params = {address: texto, components: "country:CO", language: "es"};
+    const url = usaProxy() ? `${PROXY_GEO}/api/geocode?` + new URLSearchParams(params)
+      : "https://maps.googleapis.com/maps/api/geocode/json?" + new URLSearchParams({...params, key: this.key});
     const datos = await solicitar(url, {}, 200, "gg|" + texto);
     for (const r of datos.results || []) {
       const tipo = r.geometry.location_type;
@@ -734,7 +739,11 @@ const mapeo = () => Object.fromEntries(CAMPOS.map(([k]) => [k, $("#map_" + k).va
 
 // Proveedor y clave
 const radios = document.querySelectorAll("input[name=prov]");
-radios.forEach(r => r.addEventListener("change", () => $("#keyBox").classList.toggle("hidden", r.value === "osm" && r.checked)));
+// Con el proxy la clave está en el servidor: no se muestra la casilla de la API key
+const ajustarCajaClave = () => $("#keyBox").classList.toggle("hidden",
+  usaProxy() || document.querySelector("input[name=prov]:checked")?.value === "osm");
+radios.forEach(r => r.addEventListener("change", ajustarCajaClave));
+ajustarCajaClave();
 try { const k = localStorage.getItem("geo_apikey"); if (k) { $("#apikey").value = k; $("#remember").checked = true; } } catch (e) {}
 // Si este mes ya se llegó al límite gratis de Google, se usa OpenStreetMap aunque se elija Google
 radios.forEach(r => r.addEventListener("change", () => { if (r.value === "google" && r.checked && googleAgotado()) pasarAOpenStreetMap(); }));
@@ -749,7 +758,7 @@ async function ejecutar() {
   const provNombre = document.querySelector("input[name=prov]:checked").value;
   let prov = provNombre === "google" ? Google : OSM;
   if (prov === Google && googleAgotado()) prov = pasarAOpenStreetMap();
-  if (prov === Google) {
+  if (prov === Google && !usaProxy()) {
     Google.key = $("#apikey").value.trim();
     if (!Google.key) { estado("Ingresa la API key de Google o elige OpenStreetMap.", true); return; }
     try { $("#remember").checked ? localStorage.setItem("geo_apikey", Google.key) : localStorage.removeItem("geo_apikey"); } catch (e) {}
@@ -937,7 +946,7 @@ mostrarHerramienta($("#herramienta").value);
 function prepararProveedor(avisar) {
   let prov = document.querySelector("input[name=prov]:checked").value === "google" ? Google : OSM;
   if (prov === Google && googleAgotado()) prov = pasarAOpenStreetMap();
-  if (prov === Google) {
+  if (prov === Google && !usaProxy()) {
     Google.key = $("#apikey").value.trim();
     if (!Google.key) { avisar("Ingresa la API key de Google arriba, en «Servicio de búsqueda», o elige OpenStreetMap.", true); return null; }
     try { $("#remember").checked ? localStorage.setItem("geo_apikey", Google.key) : localStorage.removeItem("geo_apikey"); } catch (e) {}

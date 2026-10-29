@@ -886,8 +886,9 @@ function descargar() {
     if (r && r.estado !== "SIN_GEO") {
       // Si no se encontró y el registro venía «Sin Geo», se conserva ese texto en vez de dejarlo vacío
       const original = esSinGeo(f[m.lat], f[m.lon]);
-      const lat = p ? {t: "n", v: p[0], z: "0.0000000"} : {t: "s", v: original ? String(f[m.lat]) : ""};
-      const lon = p ? {t: "n", v: p[1], z: "0.0000000"} : {t: "s", v: original ? String(f[m.lon]) : ""};
+      // Como texto, para que salgan con punto decimal aunque Excel esté en español (que muestra coma)
+      const lat = {t: "s", v: p ? String(p[0]) : original ? String(f[m.lat]) : ""};
+      const lon = {t: "s", v: p ? String(p[1]) : original ? String(f[m.lon]) : ""};
       if (m.lat) ws[XLSX.utils.encode_cell({r: fila, c: colLat})] = lat;
       if (m.lon) ws[XLSX.utils.encode_cell({r: fila, c: colLon})] = lon;
     }

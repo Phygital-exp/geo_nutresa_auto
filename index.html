@@ -122,12 +122,13 @@
     <summary>Columnas reconocidas automáticamente · ajustar</summary>
     <div class="grid" id="mapping" style="margin-top:10px"></div>
   </details>
-  <p class="hint">Si la latitud o la longitud dicen <b>sin geo</b>, el registro se conserva tal cual, sin buscarlo.</p>
+  <p class="hint">Si desmarcas «Buscar también los que dicen Sin Geo», esos registros se conservan tal cual, sin buscarlos.</p>
 </section>
 
 <section class="panel hidden" id="prov">
   <h2><span class="step">2</span>Buscar las ubicaciones</h2>
   <div class="row">
+    <label class="check"><input type="checkbox" id="buscarSinGeo" checked> Buscar también los que dicen «Sin Geo» (completar su geo)</label>
     <label class="check"><input type="checkbox" id="testMode"> Modo prueba: procesar solo los primeros 5 registros</label>
   </div>
   <div class="row" style="margin-top:14px">

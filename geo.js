@@ -16,12 +16,15 @@ const DEPARTAMENTOS = {IBAGUE:"Tolima",PEREIRA:"Risaralda",DOSQUEBRADAS:"Risaral
   "LA ESTRELLA":"Antioquia",RIONEGRO:"Antioquia",CALI:"Valle del Cauca",YUMBO:"Valle del Cauca",JAMUNDI:"Valle del Cauca",
   PALMIRA:"Valle del Cauca",BUCARAMANGA:"Santander",FLORIDABLANCA:"Santander",GIRON:"Santander",PIEDECUESTA:"Santander",
   MANIZALES:"Caldas",VILLAMARIA:"Caldas",CARTAGENA:"Bolívar","SANTA MARTA":"Magdalena",CUCUTA:"Norte de Santander",
-  VILLAVICENCIO:"Meta",ARMENIA:"Quindío",NEIVA:"Huila",PASTO:"Nariño",MONTERIA:"Córdoba",VALLEDUPAR:"Cesar",POPAYAN:"Cauca"};
+  VILLAVICENCIO:"Meta",ARMENIA:"Quindío",NEIVA:"Huila",PASTO:"Nariño",MONTERIA:"Córdoba",VALLEDUPAR:"Cesar",POPAYAN:"Cauca",
+  "SAN JOSE DEL GUAVIARE":"Guaviare",CALDAS:"Antioquia",ESPINAL:"Tolima",CAJICA:"Cundinamarca",COTA:"Cundinamarca",
+  "LOS PATIOS":"Norte de Santander","VILLA DEL ROSARIO":"Norte de Santander"};
 const AREA_METROPOLITANA = {PEREIRA:["DOSQUEBRADAS","LA VIRGINIA"],DOSQUEBRADAS:["PEREIRA"],
   MEDELLIN:["BELLO","ENVIGADO","ITAGUI","SABANETA"],BELLO:["MEDELLIN"],ENVIGADO:["MEDELLIN","SABANETA","ITAGUI"],
   SABANETA:["ENVIGADO","MEDELLIN","LA ESTRELLA"],BARRANQUILLA:["SOLEDAD","PUERTO COLOMBIA","MALAMBO"],
   BUCARAMANGA:["FLORIDABLANCA","GIRON","PIEDECUESTA"],FLORIDABLANCA:["BUCARAMANGA","PIEDECUESTA","GIRON"],
-  CALI:["YUMBO","JAMUNDI"],BOGOTA:["SOACHA","CHIA"],MANIZALES:["VILLAMARIA"]};
+  CALI:["YUMBO","JAMUNDI"],BOGOTA:["SOACHA","CHIA","CAJICA","COTA"],MANIZALES:["VILLAMARIA"],
+  CUCUTA:["LOS PATIOS","VILLA DEL ROSARIO"]};
 const ALIAS_MUNICIPIO = [[["FLORIDA","B"],"FLORIDABLANCA"]];
 // [código, nombre para buscar, alias (secuencias de tokens), ciudades sede de la cadena]
 const MARCAS = [
@@ -37,6 +40,10 @@ const MARCAS = [
   ["CARULLA","Carulla",[["CARULLA"]],[]], ["JUMBO","Jumbo",[["JUMBO"]],[]], ["D1","Tiendas D1",[["D1"]],[]],
   ["ARA","Tiendas Ara",[["ARA"]],[]], ["ALKOSTO","Alkosto",[["ALKOSTO"]],[]], ["COLSUBSIDIO","Colsubsidio",[["COLSUBSIDIO"]],[]],
   ["CONSUMO","Consumo",[["CONSUMO"]],[]], ["CAFAM","Cafam",[["CAFAM"]],[]], ["SURTIMAX","Surtimax",[["SURTIMAX"]],[]],
+  ["METROMAX","Metromax",[["METROMAX"]],[]],
+  // Droguerías: aquí «Droguería» o «Farmacia» en el nombre sí es la tienda buscada
+  ["FARMATODO","Farmatodo",[["FARMATODO"]],[]], ["LOCATEL","Locatel",[["LOCATEL"]],[]],
+  ["CRUZVERDE","Cruz Verde",[["CRUZ","VERDE"]],[]], ["PASTEUR","Pasteur",[["PASTEUR"]],[]],
 ];
 const GENERICAS = new Set(["SUPERMERCADO","SUPERMERCADOS","AUTOSERVICIO","AUTOSERVICIOS","MERCADOS","MERCADO",
   "SUPERTIENDAS","SUPERTIENDA","SAS","S","A","SA","DE","LA","EL","LOS","LAS","DEL","Y","N","NO"]);
@@ -46,10 +53,13 @@ const AJENOS = new Set(["OPTICA","OPTICAS","DROGUERIA","DROGUERIAS","FARMACIA","
   "BANCO","VIAJES","SEGUROS","GASOLINERA","SERVITECA","CLUB","VINO","VINOS","LICORES","LICORERA","AKT","MOTOS","BALOTO","PAC","EDS"]);
 const TIPOS_TIENDA = new Set(["supermarket","grocery_store","store","food_store","department_store","hypermarket",
   "wholesaler","discount_store","convenience_store","shopping_mall","market","warehouse_store","butcher_shop"]);
+const FARMACIAS = new Set(["FARMATODO", "LOCATEL", "CRUZVERDE", "PASTEUR", "COLSUBSIDIO", "CAFAM"]);
+const AJENOS_FARMACIA = new Set([...AJENOS].filter(t => !/DROGUERIA|FARMACIA/.test(t)));
 const expandir = toks => toks.flatMap(t => (ABREV[t] || t).split(" "));
 const nombreMunicipio = c => ({BOGOTA:"Bogotá",MEDELLIN:"Medellín",IBAGUE:"Ibagué",FACATATIVA:"Facatativá",
   ZIPAQUIRA:"Zipaquirá",ITAGUI:"Itagüí",GIRON:"Girón",JAMUNDI:"Jamundí",VILLAMARIA:"Villamaría",CHIA:"Chía",
-  CUCUTA:"Cúcuta",POPAYAN:"Popayán",MONTERIA:"Montería"}[c] || titulo(c));
+  CUCUTA:"Cúcuta",POPAYAN:"Popayán",MONTERIA:"Montería","SAN JOSE DEL GUAVIARE":"San José del Guaviare",
+  CAJICA:"Cajicá"}[c] || titulo(c));
 const codigoMunicipio = s => { const k = clave(s).toUpperCase();
   return Object.keys(DEPARTAMENTOS).find(m => clave(m).toUpperCase() === k) || sinAcentos(s).trim().toUpperCase(); };
 
@@ -100,7 +110,7 @@ function parsearDireccion(dir) {
     cruceTipo: null, cruce: null, placa: null, esquina: false, complemento: "", problemas: []};
   if (direccionAusente(dir)) { d.ausente = true; d.problemas.push("Dirección ausente"); return d; }
   let texto = sinAcentos(d.original).toUpperCase()
-    .replace(/N[°º]|\bNO\.?(?=\s|\d)|\bNRO\.?|#|-|\.|,/g, " ");
+    .replace(/N[°º]|\bNO\.?(?=\s|\d)|\bNRO\.?|#|-|–|—|\.|,/g, " ");
   const toks = texto.split(/\s+/).filter(Boolean);
   if (!toks.length || !TIPOS_VIA[toks[0]]) { d.problemas.push("Tipo de vía no reconocido"); return d; }
   d.tipo = TIPOS_VIA[toks[0]];
@@ -118,6 +128,12 @@ function parsearDireccion(dir) {
   }
   if (i < toks.length && /^\d+[A-Z]?$/.test(toks[i])) d.placa = toks[i++];
   let resto = toks.slice(i);
+  // «Calle 83 # 4-72 Sur»: el sentido escrito al final pertenece a la vía principal
+  const sentidoFinal = resto.find(t => SENTIDOS[t]);
+  if (sentidoFinal && d.numero && !/ (Sur|Norte|Este|Oeste)$/.test(d.numero)) {
+    d.numero += " " + SENTIDOS[sentidoFinal];
+    resto = resto.filter(t => t !== sentidoFinal);
+  }
   if (resto.some(t => t === "ESQ" || t === "ESQUINA")) { d.esquina = true; resto = resto.filter(t => t !== "ESQ" && t !== "ESQUINA"); }
   d.complemento = resto.join(" ");
   if (d.cruceTipo && !d.placa) d.esquina = true;
@@ -203,7 +219,8 @@ function evaluarNombre(n, c) {
   if (!c.esTienda) return {ok: false, frac: 0};
   const tn = expandir(tokens(c.nombre)), td = expandir(tokens(c.direccion));
   if (n.marca) {
-    const ok = n.alias.some(a => contieneSeq(tn, a)) && !tn.some(t => AJENOS.has(t));
+    const ajenos = FARMACIAS.has(n.marca) ? AJENOS_FARMACIA : AJENOS;
+    const ok = n.alias.some(a => contieneSeq(tn, a)) && !tn.some(t => ajenos.has(t));
     if (!n.sucursal.length) return {ok, frac: 1};
     const sede = n.sucursal.filter(t => !SEDE_GENERICA.has(t));
     const usar = sede.length ? sede : n.sucursal;
@@ -412,9 +429,11 @@ const OSM = {
 };
 
 /* ============================== Georreferenciación de un registro ============================== */
+const sinArticulo = k => k.replace(/^(el|la|los|las)(?=[a-z]{4,})/, "");
 const mismoMunicipio = (texto, codigo) => {
-  const k = clave(texto).replace(/^perimetrourbano|ciudad$/g, "");
-  return !!k && (k === clave(codigo) || k === clave(nombreMunicipio(codigo)) || k.startsWith(clave(nombreMunicipio(codigo))));
+  const k = sinArticulo(clave(texto).replace(/^perimetrourbano|ciudad$/g, ""));
+  const n = sinArticulo(clave(nombreMunicipio(codigo)));
+  return !!k && (k === sinArticulo(clave(codigo)) || k === n || k.startsWith(n));
 };
 async function centroCiudad(prov, codigo) {
   const llave = `centro|${prov.nombre}|${codigo}`;
@@ -439,7 +458,8 @@ async function georreferenciar(fila, prov) {
   const res = {estado: "", tipo: "", nombre: "", direccion: "", ciudad: "", lat: null, lon: null, fuente: "", id: "", obs};
 
   // Municipios aceptables: el registrado, el que indica el nombre, su área metropolitana y las ciudades de la cadena
-  const principales = [codCiudad, nom.municipioNombre].filter((v, i, a) => v && a.indexOf(v) === i);
+  const muniDireccion = !d.ausente && !utilizable(d) ? Object.keys(DEPARTAMENTOS).find(m => clave(m) === clave(d.original)) : null;
+  const principales = [codCiudad, nom.municipioNombre, muniDireccion].filter((v, i, a) => v && a.indexOf(v) === i);
   const vecinos = [...(AREA_METROPOLITANA[codCiudad] || []), ...nom.ciudadesMarca].filter(m => !principales.includes(m));
   const enMunicipio = (o, m) => (o.municipios || [o.municipio]).some(t => mismoMunicipio(t, m));
   const municipioDe = o => o ? [...principales, ...vecinos].find(m => enMunicipio(o, m)) || null : null;
@@ -453,6 +473,15 @@ async function georreferenciar(fila, prov) {
         (punto.precision !== "EXACTA" && punto.precision !== "INTERPOLADA"))) {
       if (punto.precision !== "CIUDAD" && !municipioDe(punto)) obs.push(`La dirección se ubicó en ${punto.municipio || "otro municipio"}; no se usa.`);
       punto = punto.precision === "APROXIMADA" && municipioDe(punto) ? {...punto, soloReferencia: true} : null;
+    }
+    if (punto && !punto.soloReferencia && prov === Google) {
+      const dg = parsearDireccionGoogle(punto.descripcion);
+      const cruceDistinto = numeroInicial(d.cruce) !== null && numeroInicial(dg.cruce) !== null &&
+        Math.abs(numeroInicial(d.cruce) - numeroInicial(dg.cruce)) > 1;
+      if (dg.tipo && (!mismaVia(d, dg) || cruceDistinto)) {
+        obs.push(`Google ubicó la dirección en otra vía (${String(punto.descripcion).split(",")[0]}); se usa solo como referencia.`);
+        punto = {...punto, soloReferencia: true};
+      }
     }
   }
   // P1 / P3: nombre + dirección + ciudad, y sede + ciudad
@@ -645,12 +674,12 @@ async function georreferenciar(fila, prov) {
 /* ============================== Interfaz ============================== */
 const $ = s => document.querySelector(s);
 const CAMPOS = [
-  ["id", "Código (SAP)", /^(sap|codigo|cod|id|nit)$/i],
-  ["nombre", "Nombre del PDV", /^(pdv|nombre|establecimiento|razon.?social|punto.?de.?venta|tienda)$/i],
-  ["ciudad", "Ciudad", /^(ciudad|municipio|poblacion)$/i],
-  ["direccion", "Dirección", /^(direccion|dir|domicilio)$/i],
-  ["lat", "Latitud", /^(lat|latitud|latitude)$/i],
-  ["lon", "Longitud", /^(lon|lng|long|longitud|longiutd|longitude)$/i],
+  ["id", "Código (SAP)", ["sap", "codigopdv", "codigo", "cod", "nit", "id"]],
+  ["nombre", "Nombre del PDV", ["pdv", "nombrepdv", "nombre", "establecimiento", "razonsocial", "puntodeventa", "tienda"]],
+  ["ciudad", "Ciudad", ["ciudad", "municipio", "poblacion"]],
+  ["direccion", "Dirección", ["direccion", "dir", "domicilio"]],
+  ["lat", "Latitud", ["latitud", "lat", "latitude"]],
+  ["lon", "Longitud", ["longitud", "longiutd", "lon", "lng", "long", "longitude"]],
 ];
 let libro = null, hoja = null, filas = [], columnas = [], resultados = [], detener = false, mapa = null, capa = null;
 
@@ -688,7 +717,7 @@ function cargarHoja(nombre) {
   info.querySelector(".cnt")?.remove();
   info.insertAdjacentHTML("beforeend", `<span class="cnt"> · ${filas.length} registros, ${columnas.length} columnas</span>`);
   $("#mapping").innerHTML = CAMPOS.map(([k, etiqueta, re]) => {
-    const det = columnas.find(c => re.test(clave(c))) || columnas.find(c => re.test(sinAcentos(c).trim())) || "";
+    const det = detectarColumna(columnas, re);
     return `<div><label for="map_${k}">${etiqueta}</label><select id="map_${k}"><option value="">(no usar)</option>` +
       columnas.map(c => `<option${c === det ? " selected" : ""}>${escapar(c)}</option>`).join("") + "</select></div>";
   }).join("");
@@ -737,7 +766,7 @@ async function ejecutar() {
       lat: m.lat ? f[m.lat] : "", lon: m.lon ? f[m.lon] : ""};
     estado(`Procesando ${i + 1} de ${limite}: ${fila.nombre}`);
     $("#progress div").style.width = `${(i / limite) * 100}%`;
-    if (esSinGeo(fila.lat, fila.lon)) {
+    if (esSinGeo(fila.lat, fila.lon) && !$("#buscarSinGeo").checked) {
       resultados[i] = {estado: "SIN_GEO", tipo: "", nombre: "", direccion: "", ciudad: "", lat: null, lon: null, fuente: "", id: "",
         obs: ["Registro marcado 'sin geo' en la base: se conserva tal cual, sin procesar."]};
     } else {
@@ -844,8 +873,10 @@ function descargar() {
     const r = resultados[i], fila = rango.s.r + 1 + i, p = puntoDe(r);
     // LATITUD/LONGITUD: coordenada del mapa; "sin geo" se conserva; sin ubicación queda vacía (no "4")
     if (r && r.estado !== "SIN_GEO") {
-      const lat = p ? {t: "n", v: p[0], z: "0.0000000"} : {t: "s", v: ""};
-      const lon = p ? {t: "n", v: p[1], z: "0.0000000"} : {t: "s", v: ""};
+      // Si no se encontró y el registro venía «Sin Geo», se conserva ese texto en vez de dejarlo vacío
+      const original = esSinGeo(f[m.lat], f[m.lon]);
+      const lat = p ? {t: "n", v: p[0], z: "0.0000000"} : {t: "s", v: original ? String(f[m.lat]) : ""};
+      const lon = p ? {t: "n", v: p[1], z: "0.0000000"} : {t: "s", v: original ? String(f[m.lon]) : ""};
       if (m.lat) ws[XLSX.utils.encode_cell({r: fila, c: colLat})] = lat;
       if (m.lon) ws[XLSX.utils.encode_cell({r: fila, c: colLon})] = lon;
     }

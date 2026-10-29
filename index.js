@@ -8,7 +8,16 @@ const PORT = process.env.PORT || 3000;
 const GOOGLE_KEY = process.env.GOOGLE_MAPS_API_KEY;
 const CAMPOS_PLACES = "places.id,places.displayName,places.formattedAddress,places.location,places.types,places.addressComponents";
 
-app.use(cors());
+// Solo las páginas de georreferenciación pueden usar el proxy desde el navegador
+const ORIGENES = ["https://suntzz.github.io", "https://phygital-exp.github.io", /^http:\/\/localhost(:\d+)?$/];
+app.use(cors({ origin: ORIGENES }));
+app.use("/api", (req, res, next) => {
+    const origen = req.get("Origin");
+    if (origen && !ORIGENES.some(o => (o instanceof RegExp ? o.test(origen) : o === origen))) {
+        return res.status(403).json({ error: "Origen no permitido" });
+    }
+    next();
+});
 app.use(express.json());
 
 async function reenviar(res, url, opciones) {

@@ -727,7 +727,7 @@ function cargarHoja(nombre) {
   $("#mapping").querySelectorAll("select").forEach(s => s.addEventListener("change", revisar));
   revisar();
   resultados = [];
-  $("#results").classList.add("hidden");
+  $("#geoResults").classList.add("hidden");
 }
 const escapar = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const mapeo = () => Object.fromEntries(CAMPOS.map(([k]) => [k, $("#map_" + k).value]));
@@ -758,7 +758,7 @@ async function ejecutar() {
   detener = false; consultasReales = 0;
   $("#run").disabled = true; $("#stop").disabled = false;
   resultados = filas.map(() => null);
-  $("#results").classList.remove("hidden");
+  $("#geoResults").classList.remove("hidden");
   for (let i = 0; i < Math.min(limite, filas.length); i++) {
     if (detener) break;
     const f = filas[i];

@@ -66,6 +66,12 @@ const codigoMunicipio = s => { const k = clave(s).toUpperCase();
 /* ============================== Coordenadas originales ============================== */
 const esSinGeo = (lat, lon) => /sin\s*geo/i.test(`${lat ?? ""} ${lon ?? ""}`);
 const enColombia = (lat, lon) => lat >= -4.3 && lat <= 13.6 && lon >= -82 && lon <= -66.8;
+function coordOriginal(lat, lon) {
+  if (esSinGeo(lat, lon) || vacio(lat) || vacio(lon)) return null;
+  const a = parseFloat(String(lat).replace(",", ".")), b = parseFloat(String(lon).replace(",", "."));
+  if (isNaN(a) || isNaN(b) || (Number.isInteger(a) && Number.isInteger(b)) || !enColombia(a, b)) return null;
+  return {lat: a, lon: b};
+}
 function diagnostico(lat, lon) {
   if (esSinGeo(lat, lon)) return "Marcado 'sin geo'";
   if (vacio(lat) || vacio(lon)) return "Coordenadas vacías";
@@ -455,11 +461,12 @@ async function georreferenciar(fila, prov) {
   const obs = [diagnostico(fila.lat, fila.lon) + "."];
   const nom = analizarNombre(fila.nombre, fila.id);
   const d = parsearDireccion(fila.direccion);
+  const geoOrig = coordOriginal(fila.lat, fila.lon);
   const ciudad = String(fila.ciudad ?? "").trim();
   const codCiudad = codigoMunicipio(ciudad);
   if (nom.codigoTienda) obs.push(`Código de tienda en el nombre: ${nom.codigoTienda}.`);
   if (d.problemas.length && !d.ausente) obs.push("Dirección: " + d.problemas.join("; ") + ".");
-  if (d.ausente) obs.push("Sin dirección: se busca por nombre y ciudad.");
+  if (d.ausente) obs.push(geoOrig ? "Sin dirección: se busca por nombre, coordenadas y ciudad." : "Sin dirección: se busca por nombre y ciudad.");
   const res = {estado: "", tipo: "", nombre: "", direccion: "", ciudad: "", lat: null, lon: null, fuente: "", id: "", obs};
 
   // Municipios aceptables: el registrado, el que indica el nombre, su área metropolitana y las ciudades de la cadena
@@ -489,26 +496,32 @@ async function georreferenciar(fila, prov) {
       }
     }
   }
-  // P1 / P3: nombre + dirección + ciudad, y sede + ciudad
+  // P1 / P3: nombre + dirección + ciudad, y sede + ciudad (con sesgo por coordenadas si las hay)
   // Google recibe la ciudad dentro del texto; OSM limita la búsqueda al área de la ciudad
   const conCiudad = (texto, muni) => prov === Google ? `${texto} ${muni}` : texto;
   const sede = nom.marca ? terminoSede(nom) : nombreLimpio(nom);
   const sesgo = punto && !punto.soloReferencia ? {lat: punto.lat, lon: punto.lon, radio: 2000} : centro;
+  const sesgoGeo = geoOrig ? {lat: geoOrig.lat, lon: geoOrig.lon, radio: 2000} : null;
   const consultas = [];
   if (!d.ausente && normalizada(d)) consultas.push([`${nombreLimpio(nom)}, ${normalizada(d)}, ${titulo(ciudad)}`, null]);
+  if (sesgoGeo && (!punto || punto.soloReferencia)) {
+    consultas.push([conCiudad(sede, titulo(ciudad)), sesgoGeo]);
+    if (nom.marca) consultas.push([conCiudad(nom.marcaBusqueda, titulo(ciudad)), sesgoGeo]);
+  }
   consultas.push([conCiudad(sede, titulo(ciudad)), sesgo]);
   if (nom.marca) consultas.push([conCiudad(nom.marcaBusqueda, titulo(ciudad)), sesgo]);
   if (nom.municipioNombre && nom.municipioNombre !== codCiudad) {
     const cm = await centroCiudad(prov, nom.municipioNombre);
     consultas.push([conCiudad(sede, nombreMunicipio(nom.municipioNombre)), cm]);
   }
-  // Coincidencia fuerte: nombre y sede coinciden, está en la ciudad y, si hay dirección, cerca de ella.
+  // Coincidencia fuerte: nombre y sede coinciden, está en la ciudad y, si hay dirección o coordenadas, cerca de ellas.
   // Con una así no hace falta seguir buscando (cada búsqueda en Google consume cupo).
   const fuerte = lista => lista.some(c => {
     const e = evaluarNombre(nom, c);
     if (!e.ok || !principales.some(m => enMunicipio(c, m))) return false;
-    if (nom.marca && nom.sucursal.length && e.frac < .99) return false;
+    if (nom.marca && nom.sucursal.length && e.frac < .99 && !(geoOrig && distancia(c.lat, c.lon, geoOrig.lat, geoOrig.lon) <= 300)) return false;
     if (punto && !punto.soloReferencia) return distancia(c.lat, c.lon, punto.lat, punto.lon) <= 300;
+    if (geoOrig) return distancia(c.lat, c.lon, geoOrig.lat, geoOrig.lon) <= 300;
     // Si hay dirección pero no se pudo ubicar con precisión, falta evidencia (p. ej. el centro comercial): se sigue buscando
     return !utilizable(d);
   });
@@ -554,8 +567,9 @@ async function georreferenciar(fila, prov) {
                      : parsearDireccionGoogle(c.direccion);
     const comp = compararDireccion(d, dc);
     const dPto = punto ? distancia(c.lat, c.lon, punto.lat, punto.lon) : null;
+    const dGeo = geoOrig ? distancia(c.lat, c.lon, geoOrig.lat, geoOrig.lon) : null;
     const dCC = centros.length ? Math.min(...centros.map(m => distancia(c.lat, c.lon, m.lat, m.lon))) : null;
-    evaluados.push({c, frac, muni, comp, dPto, dCC: dCC !== null && dCC <= 200 ? dCC : null, extra: palabrasExtra(nom, c)});
+    evaluados.push({c, frac, muni, comp, dPto, dGeo, dCC: dCC !== null && dCC <= 200 ? dCC : null, extra: palabrasExtra(nom, c)});
   }
   const marcaSinSede = nom.marca && !nom.sucursal.length;
   for (const e of evaluados) {
@@ -577,7 +591,9 @@ async function georreferenciar(fila, prov) {
       else {
         const seg = ok.find(e => distancia(e.c.lat, e.c.lon, ok[0].c.lat, ok[0].c.lon) > 150);
         const f0 = fuerza(ok[0]).slice(0, 3), f1 = fuerza(seg).slice(0, 3);
+        const okGeo = geoOrig ? agrupar(ok.filter(e => e.dGeo !== null && e.dGeo <= 300)) : [];
         if (mayor(f0, f1)) elegido = ok[0];
+        else if (okGeo.length === 1) { elegido = okGeo[0][0]; elegido.porGeo = true; }
         else { res.estado = "REVISAR"; obs.push(`${grupos.length} sedes compatibles con la dirección: ` +
           grupos.slice(0, 4).map(g => `${g[0].c.nombre} (${fmt(g[0].c.lat, g[0].c.lon)})`).join(" | ") + "."); }
       }
@@ -585,7 +601,7 @@ async function georreferenciar(fila, prov) {
       const cerca = evaluados.slice().sort((a, b) => (a.dPto ?? 1e9) - (b.dPto ?? 1e9))[0];
       if (cerca.frac >= .5 && cerca.dPto !== null && cerca.dPto <= 600) {
         res.estado = "REVISAR"; res.tipo = "DISCREPANCIA_DIRECCION";
-        Object.assign(res, {nombre: cerca.c.nombre, direccion: cerca.c.direccion, ciudad: cerca.c.municipio, fuente: cerca.c.fuente, id: cerca.c.id});
+        Object.assign(res, {nombre: cerca.c.nombre, direccion: String(cerca.c.direccion || "").toUpperCase(), ciudad: cerca.c.municipio, fuente: cerca.c.fuente, id: cerca.c.id});
         obs.push(`Se encontró '${cerca.c.nombre}' a ${Math.round(cerca.dPto)} m de la dirección registrada; candidato ${fmt(cerca.c.lat, cerca.c.lon)}.`);
       } else obs.push(`Las sedes de la marca encontradas no corresponden a la dirección` +
         (cerca.dPto !== null ? ` (la más cercana, '${cerca.c.nombre}', está a ${Math.round(cerca.dPto)} m).` : "."));
@@ -595,7 +611,15 @@ async function georreferenciar(fila, prov) {
     const grupos = agrupar(fuertes);
     const mejores = grupos.map(g => g.slice().sort((a, b) => mayor(fuerza(a), fuerza(b)) ? -1 : 1)[0])
       .sort((a, b) => mayor(fuerza(a), fuerza(b)) ? -1 : 1);
-    if (mejores.length === 1 || (mejores.length > 1 && mayor(fuerza(mejores[0]).slice(0, 3), fuerza(mejores[1]).slice(0, 3)))) {
+    const baseGeo = fuertes.length ? fuertes : evaluados;
+    const enGeo = geoOrig ? agrupar(baseGeo.filter(e => e.dGeo !== null && e.dGeo <= 300))
+      .map(g => g.slice().sort((a, b) => (a.dGeo - b.dGeo) || (mayor(fuerza(a), fuerza(b)) ? -1 : 1))[0])
+      .sort((a, b) => a.dGeo - b.dGeo) : [];
+    if (enGeo.length === 1 || (enGeo.length > 1 && ((enGeo[0].dGeo <= 150 && enGeo[1].dGeo > 150) || mayor(fuerza(enGeo[0]).slice(0, 3), fuerza(enGeo[1]).slice(0, 3))))) {
+      elegido = enGeo[0];
+      elegido.porGeo = true;
+      obs.push(`Sede identificada por nombre y coordenadas (${Math.round(elegido.dGeo)} m de la geo registrada).`);
+    } else if (mejores.length === 1 || (mejores.length > 1 && mayor(fuerza(mejores[0]).slice(0, 3), fuerza(mejores[1]).slice(0, 3)))) {
       elegido = mejores[0];
       elegido.soloNombre = utilizable(d) && !elegido.comp.placa && !elegido.comp.coherente;
       obs.push("Sede identificada por nombre y municipio; la dirección no permitió verificarla" +
@@ -612,13 +636,15 @@ async function georreferenciar(fila, prov) {
 
   if (elegido) {
     const c = elegido.c;
-    Object.assign(res, {nombre: c.nombre, direccion: c.direccion, ciudad: nombreMunicipio(elegido.muni), fuente: c.fuente, id: c.id,
-      tipo: elegido.comp.placa ? "SEDE_IDENTIFICADA_DIRECCION_COINCIDENTE" : "SEDE_IDENTIFICADA", estado: "GEORREFERENCIADO"});
+    if (elegido.dGeo !== null && elegido.dGeo <= 300) { elegido.porGeo = true; elegido.soloNombre = false; }
+    Object.assign(res, {nombre: c.nombre, direccion: String(c.direccion || "").toUpperCase(), ciudad: nombreMunicipio(elegido.muni), fuente: c.fuente, id: c.id,
+      tipo: elegido.comp.placa ? "SEDE_IDENTIFICADA_DIRECCION_COINCIDENTE" : elegido.porGeo ? "SEDE_IDENTIFICADA_GEO" : "SEDE_IDENTIFICADA", estado: "GEORREFERENCIADO"});
     const partes = [];
     if (elegido.comp.placa) partes.push("la placa coincide");
     else if (elegido.comp.coherente) partes.push("nomenclatura coherente con la dirección");
     if (elegido.dCC !== null) partes.push(`${Math.round(elegido.dCC)} m del centro comercial`);
     if (elegido.dPto !== null && !punto.soloReferencia) partes.push(`${Math.round(elegido.dPto)} m del punto de la dirección`);
+    if (elegido.porGeo) partes.push(`${Math.round(elegido.dGeo)} m de la geo registrada`);
     if (partes.length) obs.push("Validación: " + partes.join(", ") + ".");
     const compl = new Set(expandir(tokens(d.complemento)));
     const ccEnDireccion = elegido.dCC !== null && nom.sucursal.some(t => !SEDE_GENERICA.has(t) && compl.has(t));
@@ -634,7 +660,7 @@ async function georreferenciar(fila, prov) {
     }
     if (!principales.includes(elegido.muni) || !enMunicipio(c, codCiudad)) {
       if (!enMunicipio(c, codCiudad)) {
-        const fuerte = elegido.comp.placa || elegido.comp.coherente || (elegido.dPto !== null && elegido.dPto <= 200);
+        const fuerte = elegido.comp.placa || elegido.comp.coherente || (elegido.dPto !== null && elegido.dPto <= 200) || (elegido.porGeo && elegido.dGeo <= 200);
         if (elegido.muni === nom.municipioNombre || fuerte)
           obs.push(`ATENCIÓN: la ciudad registrada '${ciudad}' no coincide; la sede está en ${nombreMunicipio(elegido.muni)}. Corregir la ciudad en la base.`);
         else { res.estado = "REVISAR"; obs.push(`Discrepancia de municipio: registrada '${ciudad}', sede probable en ${nombreMunicipio(elegido.muni)}.`); }
@@ -647,15 +673,15 @@ async function georreferenciar(fila, prov) {
     else obs.push(`Candidato propuesto: ${fmt(c.lat, c.lon)}.`);
   } else if (!res.estado) {
     if (punto && !punto.soloReferencia && punto.precision === "EXACTA" && principales.some(m => enMunicipio(punto, m))) {
-      Object.assign(res, {estado: "GEORREFERENCIADO", tipo: "DIRECCION_COINCIDENTE", direccion: punto.descripcion, ciudad: punto.municipio,
+      Object.assign(res, {estado: "GEORREFERENCIADO", tipo: "DIRECCION_COINCIDENTE", direccion: String(punto.descripcion || "").toUpperCase(), ciudad: punto.municipio,
         fuente: prov === Google ? "Google Geocoding API" : prov.nombre, id: punto.id || "", lat: +punto.lat.toFixed(7), lon: +punto.lon.toFixed(7)});
       obs.push("Ubicación exacta de la dirección; el establecimiento no figura en la fuente, no es una sede verificada.");
     } else if (centros.length) {
       const m = centros[0];
-      Object.assign(res, {estado: "REVISAR", tipo: "UBICACION_APROXIMADA", nombre: m.nombre, direccion: m.direccion, ciudad: m.municipio, fuente: m.fuente, id: m.id});
+      Object.assign(res, {estado: "REVISAR", tipo: "UBICACION_APROXIMADA", nombre: m.nombre, direccion: String(m.direccion || "").toUpperCase(), ciudad: m.municipio, fuente: m.fuente, id: m.id});
       obs.push(`UBICACIÓN APROXIMADA (no verificada): centro comercial '${m.nombre}' (${fmt(m.lat, m.lon)}); el local no figura en la fuente.`);
     } else if (punto) {
-      Object.assign(res, {estado: "REVISAR", tipo: "UBICACION_APROXIMADA", direccion: punto.descripcion, ciudad: punto.municipio, fuente: prov.nombre});
+      Object.assign(res, {estado: "REVISAR", tipo: "UBICACION_APROXIMADA", direccion: String(punto.descripcion || "").toUpperCase(), ciudad: punto.municipio, fuente: prov.nombre});
       obs.push(`UBICACIÓN APROXIMADA (no verificada): ${punto.descripcion}, ${fmt(punto.lat, punto.lon)}; el establecimiento no se encontró en la fuente.`);
     } else {
       res.estado = "SIN_RESULTADO";
@@ -670,7 +696,7 @@ async function georreferenciar(fila, prov) {
     res.propuesta = [+m[1], +m[2]];
     if (!res.direccion) {   // dirección del lugar propuesto, para mostrarla y exportarla
       const lugar = [...cands, ...centros].find(c => Math.abs(c.lat - res.propuesta[0]) < 1e-5 && Math.abs(c.lon - res.propuesta[1]) < 1e-5);
-      if (lugar) Object.assign(res, {direccion: lugar.direccion, nombre: res.nombre || lugar.nombre});
+      if (lugar) Object.assign(res, {direccion: String(lugar.direccion || "").toUpperCase(), nombre: res.nombre || lugar.nombre});
     }
   }
   return res;
@@ -819,11 +845,13 @@ function pintar() {
     const p = puntoDe(r);
     const lat = p ? p[0] : (r && r.estado === "SIN_GEO" ? f[m.lat] : "");
     const lon = p ? p[1] : (r && r.estado === "SIN_GEO" ? f[m.lon] : "");
+    const dirMapa = r && r.estado !== "SIN_GEO" ? String(r.direccion || "").trim().toUpperCase() : "";
+    const dirMostrar = p && dirMapa ? dirMapa : (m.direccion ? f[m.direccion] : "");
     const punto = r && r.lat !== null ? `${r.lat},${r.lon}` : r && r.propuesta ? r.propuesta.join(",") : null;
     const q = punto || [f[m.nombre], m.direccion ? f[m.direccion] : "", f[m.ciudad], "Colombia"].filter(Boolean).join(", ");
     html += `<tr><td>${i + 1}</td><td>${escapar(f[m.id])}</td><td>${escapar(f[m.nombre])}</td><td>${escapar(f[m.ciudad])}</td>` +
-      `<td>${escapar(m.direccion ? f[m.direccion] : "")}</td><td><span class="chip ${est}">${escapar(ubicacionDe(r))}</span></td>` +
-      `<td>${escapar(lat)}</td><td>${escapar(lon)}</td><td>${escapar(r && r.estado !== "SIN_GEO" ? String(r.direccion || "").toUpperCase() : "")}</td>` +
+      `<td>${escapar(dirMostrar)}</td><td><span class="chip ${est}">${escapar(ubicacionDe(r))}</span></td>` +
+      `<td>${escapar(lat)}</td><td>${escapar(lon)}</td><td>${escapar(dirMapa)}</td>` +
       `<td class="obs">${escapar(r ? r.obs.join(" ") : "")}</td>` +
       `<td><a target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q)}">${punto ? "Ver" : "Buscar"}</a></td></tr>`;
   });
@@ -874,6 +902,7 @@ function descargar() {
   const cabecera = [];
   for (let c = rango.s.c; c <= rango.e.c; c++) { const celda = ws[XLSX.utils.encode_cell({r: rango.s.r, c})]; cabecera.push(celda ? String(celda.v) : ""); }
   const colLat = cabecera.indexOf(m.lat) + rango.s.c, colLon = cabecera.indexOf(m.lon) + rango.s.c;
+  const colDir = m.direccion ? cabecera.indexOf(m.direccion) + rango.s.c : -1;
   // GEO_OK: "OK" si quedó con geo (verificada o por confirmar), "NA" si no; si el archivo no la trae, se agrega
   const iGeoOk = cabecera.findIndex(h => /^GEO[_\s]?OK$/i.test(h.trim())), colGeoOk = iGeoOk + rango.s.c;
   const nuevas = iGeoOk < 0 ? ["GEO_OK"] : [];
@@ -891,6 +920,10 @@ function descargar() {
       const lon = {t: "s", v: p ? String(p[1]) : original ? String(f[m.lon]) : ""};
       if (m.lat) ws[XLSX.utils.encode_cell({r: fila, c: colLat})] = lat;
       if (m.lon) ws[XLSX.utils.encode_cell({r: fila, c: colLon})] = lon;
+      const dirMapa = String(r.direccion || "").trim().toUpperCase();
+      if (m.direccion && colDir >= rango.s.c && p && dirMapa) {
+        ws[XLSX.utils.encode_cell({r: fila, c: colDir})] = {t: "s", v: dirMapa};
+      }
     }
     const geoOk = r ? (p ? "OK" : "NA") : null;
     if (geoOk && iGeoOk >= 0) ws[XLSX.utils.encode_cell({r: fila, c: colGeoOk})] = {t: "s", v: geoOk};
@@ -1370,13 +1403,14 @@ async function validarPdvs() {
     const g = geoBase(V.baseIdx.get(p.sap), mb), rs = resumenRutero(p.geos);
     const fb = g.fila || {};
     const datos = {id: p.sap, nombre: (mb.nombre && fb[mb.nombre]) || p.nombre, ciudad: (mb.ciudad && fb[mb.ciudad]) || p.ciudad,
-      direccion: (mb.direccion && fb[mb.direccion]) || p.direccion, lat: "", lon: ""};
+      direccion: (mb.direccion && fb[mb.direccion]) || p.direccion,
+      lat: g.estado === "SI" ? g.lat : (rs ? rs.lat : ""), lon: g.estado === "SI" ? g.lon : (rs ? rs.lon : "")};
     $("#vProgress div").style.width = `${(i / lista.length) * 100}%`;
     estadoV(`Comparando ${i + 1} de ${lista.length}: ${datos.nombre}`);
     let enc = null, centro = null;
     try {
       if (usarMapa) {
-        enc = omitirOk && g.estado === "SI" && /^ok$/i.test(g.geoOk) ? "OMITIDO" : await georreferenciar(datos, prov);
+        enc = omitirOk && g.estado === "SI" && /^ok$/i.test(g.geoOk) && !direccionAusente(datos.direccion) ? "OMITIDO" : await georreferenciar(datos, prov);
         centro = datos.ciudad ? await centroCiudad(prov, codigoMunicipio(datos.ciudad)) : null;
       }
       V.res.set(p.sap, {g, ...evaluarComparacion({...p, ...datos}, g, rs, enc, centro, tol, usarMapa)});
@@ -1411,15 +1445,19 @@ function pintarV() {
   sel.innerHTML = `<option value="">Todos</option><option value="__pend"${actual === "__pend" ? " selected" : ""}>Sugerencias por confirmar</option>` +
     Object.entries(ETIQUETA_V).map(([k, e]) => `<option value="${k}"${k === actual ? " selected" : ""}>${e}</option>`).join("");
   const conMapa = [...V.res.values()].some(r => r.punto || r.ubic);
-  const cab = ["SAP", "PDV", "Ciudad", "Visitas", "Geo base", "Geo rutero", "Base ↔ rutero",
+  const cab = ["SAP", "PDV", "Ciudad", "Dirección", "Visitas", "Geo base", "Geo rutero", "Base ↔ rutero",
     ...(conMapa ? ["Geo mapa", "Base ↔ mapa"] : []), "Validación", "Geo final (queda en la base)", "Motivo", "Ver"];
   const coord = (a, b) => `${a.toFixed(6)}, ${b.toFixed(6)}`;
   const enlace = (a, b, t) => `<a target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&query=${a},${b}">${t}</a>`;
+  const mb = V.base ? mapeoV(CAMPOS_BASE, "b_") : null;
   let html = "<thead><tr>" + cab.map(c => `<th>${c}</th>`).join("") + "</tr></thead><tbody>";
   for (const p of V.pdvs) {
     const r = V.res.get(p.sap), clase = r ? r.clase || "NO_VERIFICABLE" : "NO_PROCESADO";
-    if (actual === "__pend" ? !(r && (V.final.get(p.sap) || decisionPorDefecto(r)).pendiente) : actual && clase !== actual) continue;
+    const d = r ? V.final.get(p.sap) || decisionPorDefecto(r) : null;
+    if (actual === "__pend" ? !(r && d.pendiente) : actual && clase !== actual) continue;
     const g = r?.g, rs = r?.rs ?? resumenRutero(p.geos);
+    const dirBase = (mb?.direccion && g?.fila ? g.fila[mb.direccion] : "") || p.direccion || "";
+    const dirFin = r ? direccionFinal(r, d, dirBase) : null;
     const gb = !g ? "" : g.estado === "SI" ? coord(g.lat, g.lon) : g.estado === "NO" ? "Sin geo" : g.estado === "NO_EN_BASE" ? "No está en la base" : `Inválida (${escapar(g.textoLat)})`;
     const gr = rs ? `${coord(rs.lat, rs.lon)}<br><small>${rs.n} visita${rs.n > 1 ? "s" : ""} con ubicación</small>` : "<small>Sin ubicación</small>";
     const gm = r?.punto ? `${coord(r.punto[0], r.punto[1])}<br><small>${escapar(r.ubic)}</small>` : r ? `<small>${escapar(r.ubic || "")}</small>` : "";
@@ -1427,7 +1465,7 @@ function pintarV() {
       r?.punto ? enlace(r.punto[0], r.punto[1], "Mapa") : "",
       `<a target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent([p.nombre, p.direccion, p.ciudad, "Colombia"].filter(Boolean).join(", "))}">Buscar</a>`]
       .filter(Boolean).join(" · ");
-    html += `<tr><td>${escapar(p.sap)}</td><td>${escapar(p.nombre)}</td><td>${escapar(p.ciudad)}</td><td>${p.visitas}</td>` +
+    html += `<tr><td>${escapar(p.sap)}</td><td>${escapar(p.nombre)}</td><td>${escapar(p.ciudad)}</td><td>${escapar(dirFin || dirBase)}</td><td>${p.visitas}</td>` +
       `<td>${gb}</td><td>${gr}</td><td>${r?.distRutero != null ? fmtDist(r.distRutero) : ""}</td>` +
       (conMapa ? `<td>${gm}</td><td>${r?.distMapa != null ? fmtDist(r.distMapa) : ""}</td>` : "") +
       `<td><span class="chip ${clase}">${ETIQUETA_V[clase]}</span></td><td class="final">${r ? celdaGeoFinal(p.sap, r) : ""}</td><td class="obs">${escapar(r?.motivo || "")}</td><td>${enlaces}</td></tr>`;
@@ -1487,6 +1525,9 @@ function descargarV() {
       DIRECCION_MAPA: r?.direccionMapa || "", UBICACION_MAPA: r?.ubic || "",
       DIFERENCIA_BASE_MAPA_M: r?.distMapa != null ? Math.round(r.distMapa) : ""});
     const d = r ? V.final.get(p.sap) || decisionPorDefecto(r) : null, cf = r ? coordsFinal(r, d) : null;
+    const dirBase = (mb?.direccion && g?.fila ? g.fila[mb.direccion] : "") || p.direccion || "";
+    const dirFin = r ? direccionFinal(r, d, dirBase) : null;
+    if (dirFin) fila.DIRECCION = dirFin;
     return Object.assign(fila, {VALIDACION: ETIQUETA_V[r ? r.clase || "NO_VERIFICABLE" : "NO_PROCESADO"],
       LATITUD_FINAL: cf ? +cf[0].toFixed(7) : r ? "Sin Geo" : "", LONGITUD_FINAL: cf ? +cf[1].toFixed(7) : r ? "Sin Geo" : "",
       GEO_FINAL_FUENTE: r ? (cf ? FUENTE_GEO[d.fuente] : "SIN GEO") + (d.pendiente ? " (por confirmar)" : d.editado ? " (a mano)" : d.autoConfirmada ? " (confirmada automáticamente)" : "") : "",
@@ -1582,6 +1623,17 @@ function coordsFinal(r, d) {
   return fuentesGeo(r)[d.fuente] || null;
 }
 
+/** Dirección en mayúsculas del sitio encontrado en el mapa, cuando corresponde o corrige la base. */
+function direccionFinal(r, d, dirOriginal) {
+  if (!r || !r.direccionMapa) return null;
+  const cf = coordsFinal(r, d);
+  if (!cf) return null;
+  if (r.clase === "CORRESPONDE" || d?.fuente === "mapa" || direccionAusente(dirOriginal)) {
+    return String(r.direccionMapa).trim().toUpperCase();
+  }
+  return null;
+}
+
 /** Lee "lat, lon" o un enlace de Google Maps / OpenStreetMap pegado por la persona. */
 function leerCoordenadas(texto) {
   const t = String(texto || "").trim();
@@ -1663,7 +1715,7 @@ function descargarBaseV() {
   const cabecera = [];
   for (let c = rango.s.c; c <= rango.e.c; c++) { const celda = ws[XLSX.utils.encode_cell({r: rango.s.r, c})]; cabecera.push(celda ? String(celda.v) : ""); }
   const col = nombre => cabecera.indexOf(nombre) + rango.s.c;
-  const cSap = col(mb.sap), cLat = col(mb.lat), cLon = col(mb.lon);
+  const cSap = col(mb.sap), cLat = col(mb.lat), cLon = col(mb.lon), cDir = mb.direccion ? col(mb.direccion) : -1;
   const extra = [["GEO_FUENTE", "GEO_VALIDACION"]];
   for (let r = rango.s.r + 1; r <= rango.e.r; r++) {
     const sap = normSap(ws[XLSX.utils.encode_cell({r, c: cSap})]?.v);
@@ -1672,6 +1724,11 @@ function descargarBaseV() {
     const d = V.final.get(sap) || decisionPorDefecto(res), c = coordsFinal(res, d);
     ws[XLSX.utils.encode_cell({r, c: cLat})] = c ? {t: "n", v: +c[0].toFixed(7)} : {t: "s", v: "Sin Geo"};
     ws[XLSX.utils.encode_cell({r, c: cLon})] = c ? {t: "n", v: +c[1].toFixed(7)} : {t: "s", v: "Sin Geo"};
+    if (mb.direccion && cDir >= rango.s.c) {
+      const dirOrig = ws[XLSX.utils.encode_cell({r, c: cDir})]?.v;
+      const dirFin = direccionFinal(res, d, dirOrig);
+      if (dirFin) ws[XLSX.utils.encode_cell({r, c: cDir})] = {t: "s", v: dirFin};
+    }
     extra.push([c ? FUENTE_GEO[d.fuente] : "SIN GEO", ETIQUETA_V[res.clase] + (d.pendiente ? " (sugerencia sin confirmar)" : d.editado ? " (elegido a mano)" : d.autoConfirmada ? " (confirmada automáticamente)" : "")]);
   }
   XLSX.utils.sheet_add_aoa(ws, extra, {origin: {r: rango.s.r, c: rango.e.c + 1}});
@@ -1683,5 +1740,5 @@ function descargarBaseV() {
 
 // Para pruebas automatizadas: cargarLibro(arrayBuffer, nombre)
 window.__geo = {cargarLibro, parsearDireccion, normalizada, analizarNombre, compararDireccion, parsearDireccionGoogle, ejecutar,
-  resultados: () => resultados, cargarRutero, cargarBase, V, aFecha, evaluarValidacion, evaluarComparacion, resumenRutero, geoVisita, decisionPorDefecto, coordsFinal, leerCoordenadas};
+  resultados: () => resultados, cargarRutero, cargarBase, V, aFecha, evaluarValidacion, evaluarComparacion, resumenRutero, geoVisita, decisionPorDefecto, coordsFinal, direccionFinal, coordOriginal, leerCoordenadas};
 
